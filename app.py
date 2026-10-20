@@ -136,18 +136,31 @@ def validate_contact_payload(data: dict) -> tuple[bool, str, dict]:
     }
 
 
-def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> bool:
-    """Sends OTP verification email via SMTP or falls back to server log."""
-    has_smtp = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD)
+def is_smtp_configured() -> bool:
+    """Returns True if real SMTP credentials have been provided in .env."""
+    clean_pwd = SMTP_PASSWORD.strip().replace(" ", "")
+    is_placeholder = (
+        not clean_pwd
+        or clean_pwd.startswith("your_")
+        or "16_character" in clean_pwd
+        or SMTP_USERNAME.startswith("your_")
+        or "@" not in SMTP_USERNAME
+    )
+    return bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and not is_placeholder)
 
-    if not has_smtp:
+
+def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str]:
+    """Sends OTP verification email via SMTP or falls back to server log."""
+    clean_pwd = SMTP_PASSWORD.strip().replace(" ", "")
+
+    if not is_smtp_configured():
         print("\n" + "=" * 70)
         print(" [LOCAL DEVELOPMENT / SETUP MODE] SMTP Credentials Not Configured in .env")
-        print(f" -> Recipient : {recipient_name} <{to_email}>")
+        print(f" -> Recipient   : {recipient_name} <{to_email}>")
         print(f" -> 6-Digit OTP : >>> {otp_code} <<< (Valid for 5 minutes)")
-        print(" (Set SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD in .env for real emails)")
+        print(" (Set your 16-character Google App Password in .env to send real emails)")
         print("=" * 70 + "\n")
-        return True
+        return True, "Dev Mode: Verification code generated! Check your terminal console for the 6-digit code."
 
     try:
         msg = MIMEMultipart("alternative")
@@ -202,21 +215,34 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> bool:
 
         server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=12)
         server.starttls()
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.login(SMTP_USERNAME, clean_pwd)
         server.send_message(msg)
         server.quit()
-        return True
+        return True, f"A 6-digit verification code has been sent to {to_email}."
+    except smtplib.SMTPAuthenticationError as e:
+        print("\n" + "=" * 70)
+        print(f" [SMTP AUTHENTICATION ERROR] Gmail login rejected for {SMTP_USERNAME}")
+        print(" -> Google requires a 16-character App Password (not your Gmail login password).")
+        print(" -> Generate one at: https://myaccount.google.com/apppasswords")
+        print(f" -> [DEV MODE FALLBACK OTP] >>> {otp_code} <<<")
+        print("=" * 70 + "\n")
+        if app.debug or os.getenv("FLASK_ENV") == "development":
+            return True, "Gmail rejected login (16-char App Password needed in .env). Check terminal for testing code!"
+        return False, "Email service authentication failed. Please check your Gmail App Password."
     except Exception as e:
-        print(f"[SMTP ERROR] Failed to send email via SMTP: {e}")
-        # Log the code anyway for debugging/fallback
-        print(f"[FALLBACK LOG] OTP for {to_email} is: {otp_code}")
-        return False
+        print("\n" + "=" * 70)
+        print(f" [SMTP ERROR] Failed to send email via SMTP: {e}")
+        print(f" -> [DEV MODE FALLBACK OTP] >>> {otp_code} <<<")
+        print("=" * 70 + "\n")
+        if app.debug or os.getenv("FLASK_ENV") == "development":
+            return True, "Could not reach SMTP server. Code printed in terminal for testing!"
+        return False, "Failed to send verification code. Please try again shortly."
 
 
 def notify_portfolio_owner(message_record: dict):
     """Notifies Kartik Bhor's inbox of the new verified contact message."""
-    has_smtp = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD and CONTACT_INBOX)
-    if not has_smtp:
+    clean_pwd = SMTP_PASSWORD.strip().replace(" ", "")
+    if not is_smtp_configured():
         print(f"[NOTIFICATION LOG] Verified contact received from {message_record.get('email')} -> {CONTACT_INBOX}")
         return
 
@@ -242,7 +268,7 @@ def notify_portfolio_owner(message_record: dict):
         msg.attach(MIMEText(body, "plain"))
         server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=12)
         server.starttls()
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.login(SMTP_USERNAME, clean_pwd)
         server.send_message(msg)
         server.quit()
     except Exception as e:
@@ -306,7 +332,7 @@ def index():
 def health():
     """Health check endpoint without exposing secrets."""
     is_supabase_configured = bool(SUPABASE_URL and SUPABASE_KEY and not SUPABASE_KEY.startswith("your_"))
-    is_smtp_configured = bool(SMTP_HOST and SMTP_USERNAME and SMTP_PASSWORD and not SMTP_PASSWORD.startswith("your_"))
+    smtp_ready = is_smtp_configured()
 
     return jsonify({
         "status": "healthy",
@@ -318,8 +344,8 @@ def health():
             "target": SUPABASE_URL
         },
         "email_service": {
-            "configured": is_smtp_configured,
-            "host": SMTP_HOST or "Local Console Fallback"
+            "configured": smtp_ready,
+            "host": SMTP_HOST if smtp_ready else "Local Console Fallback"
         },
         "timestamp": datetime.now(timezone.utc).isoformat()
     }), 200
@@ -368,16 +394,16 @@ def send_otp():
     record_request(client_ip, validated["email"])
 
     # Send OTP email
-    sent = send_otp_email(validated["email"], validated["name"], otp_code)
+    sent, status_msg = send_otp_email(validated["email"], validated["name"], otp_code)
     if not sent:
         return jsonify({
             "success": False, 
-            "error": "Failed to send verification code. Please check your email address or try again shortly."
+            "error": status_msg
         }), 500
 
     return jsonify({
         "success": True,
-        "message": f"A 6-digit verification code has been sent to {validated['email']}.",
+        "message": status_msg,
         "session_token": session_token,
         "expires_in": 300,
         "email": validated["email"]
@@ -415,13 +441,13 @@ def resend_otp():
     # Record for rate limits
     record_request(client_ip, session["email"])
 
-    sent = send_otp_email(session["email"], session["name"], new_otp)
+    sent, status_msg = send_otp_email(session["email"], session["name"], new_otp)
     if not sent:
-        return jsonify({"success": False, "error": "Could not deliver email. Please try again later."}), 500
+        return jsonify({"success": False, "error": status_msg}), 500
 
     return jsonify({
         "success": True,
-        "message": f"A new verification code has been sent to {session['email']}.",
+        "message": status_msg,
         "expires_in": 300
     }), 200
 
