@@ -162,19 +162,12 @@ def is_smtp_configured() -> bool:
     return bool(host and port and username and not is_placeholder)
 
 
-def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str, str | None]:
-    """
-    Sends OTP verification email via SMTP directly to the visitor's real email address.
-    If SMTP is unavailable or blocked, falls back seamlessly to an on-screen verification code
-    so the visitor is NEVER blocked from sending a message to Kartik.
-    Returns: (success: bool, status_message: str, code_hint: str | None)
-    """
+def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str]:
+    """Sends OTP verification email via SMTP directly to the visitor's real email address."""
     host, port, username, password, mail_from, _ = get_smtp_credentials()
 
-    # Fail-safe check: If SMTP credentials are not configured, provide on-screen code immediately
     if not is_smtp_configured():
-        print(f"[FAILOVER MODE] SMTP credentials missing in environment. Providing on-screen code: {otp_code}")
-        return True, f"Verification code generated: {otp_code}", otp_code
+        return False, "Email service is not configured. Please set SMTP_PASSWORD in your environment variables."
 
     try:
         msg = MIMEMultipart("alternative")
@@ -229,7 +222,7 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
 
         # Primary attempt: Port 587 (STARTTLS)
         try:
-            server = smtplib.SMTP(host, port, timeout=10)
+            server = smtplib.SMTP(host, port, timeout=12)
             server.ehlo()
             server.starttls()
             server.ehlo()
@@ -238,17 +231,18 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
             server.quit()
         except (smtplib.SMTPServerDisconnected, TimeoutError, OSError):
             # Automatic fallback: Port 465 (Direct SSL)
-            server = smtplib.SMTP_SSL(host, 465, timeout=10)
+            server = smtplib.SMTP_SSL(host, 465, timeout=12)
             server.login(username, password)
             server.send_message(msg)
             server.quit()
 
-        return True, f"A 6-digit verification code has been sent to {to_email}. Please check your inbox.", None
-
+        return True, f"A 6-digit verification code has been sent to {to_email}. Please check your inbox."
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"[SMTP AUTH ERROR] Gmail login rejected: {e}")
+        return False, "Gmail authentication failed. Please verify your 16-character App Password."
     except Exception as e:
-        print(f"[SMTP FAILOVER] Delivery via SMTP encountered error: {e}. Falling back to on-screen verification.")
-        # Failover to on-screen code so user is NEVER blocked by network or provider issues
-        return True, f"Verification code: {otp_code}", otp_code
+        print(f"[SMTP ERROR] {type(e).__name__}: {e}")
+        return False, f"Failed to send email to {to_email}: {e}"
 
 
 def notify_portfolio_owner(message_record: dict):
@@ -417,7 +411,7 @@ def send_otp():
     record_request(client_ip, validated["email"])
 
     # Send OTP email
-    sent, status_msg, code_hint = send_otp_email(validated["email"], validated["name"], otp_code)
+    sent, status_msg = send_otp_email(validated["email"], validated["name"], otp_code)
     if not sent:
         return jsonify({
             "success": False, 
@@ -427,7 +421,6 @@ def send_otp():
     return jsonify({
         "success": True,
         "message": status_msg,
-        "code_hint": code_hint,
         "session_token": session_token,
         "expires_in": 300,
         "email": validated["email"]
@@ -465,14 +458,13 @@ def resend_otp():
     # Record for rate limits
     record_request(client_ip, session["email"])
 
-    sent, status_msg, code_hint = send_otp_email(session["email"], session["name"], new_otp)
+    sent, status_msg = send_otp_email(session["email"], session["name"], new_otp)
     if not sent:
         return jsonify({"success": False, "error": status_msg}), 500
 
     return jsonify({
         "success": True,
         "message": status_msg,
-        "code_hint": code_hint,
         "expires_in": 300
     }), 200
 
