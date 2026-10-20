@@ -136,22 +136,35 @@ def validate_contact_payload(data: dict) -> tuple[bool, str, dict]:
     }
 
 
+def get_smtp_credentials():
+    """Dynamically reloads and returns sanitized SMTP credentials."""
+    load_dotenv(override=True)
+    host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+    port = int(os.getenv("SMTP_PORT", "587"))
+    username = os.getenv("SMTP_USERNAME", "").strip()
+    raw_pwd = os.getenv("SMTP_PASSWORD", "")
+    password = raw_pwd.strip().replace(" ", "")
+    mail_from = os.getenv("MAIL_FROM", f"Kartik Bhor Portfolio <{username}>" if username else "noreply@kartikbhor.dev")
+    inbox = os.getenv("CONTACT_INBOX", username or "kartikbhor413@gmail.com").strip()
+    return host, port, username, password, mail_from, inbox
+
+
 def is_smtp_configured() -> bool:
     """Returns True if real SMTP credentials have been provided in .env."""
-    clean_pwd = SMTP_PASSWORD.strip().replace(" ", "")
+    host, port, username, password, _, _ = get_smtp_credentials()
     is_placeholder = (
-        not clean_pwd
-        or clean_pwd.startswith("your_")
-        or "16_character" in clean_pwd
-        or SMTP_USERNAME.startswith("your_")
-        or "@" not in SMTP_USERNAME
+        not password
+        or password.startswith("your_")
+        or "16_character" in password
+        or username.startswith("your_")
+        or "@" not in username
     )
-    return bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and not is_placeholder)
+    return bool(host and port and username and not is_placeholder)
 
 
 def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str]:
     """Sends OTP verification email via SMTP directly to the visitor's real email address."""
-    clean_pwd = SMTP_PASSWORD.strip().replace(" ", "")
+    host, port, username, password, mail_from, _ = get_smtp_credentials()
 
     if not is_smtp_configured():
         return False, "Email service is not fully configured in .env. A 16-character Google App Password is required."
@@ -159,7 +172,7 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"{otp_code} is your Kartik Bhor Portfolio Verification Code"
-        msg["From"] = MAIL_FROM
+        msg["From"] = mail_from
         msg["To"] = to_email
 
         plain_text = (
@@ -207,20 +220,29 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
         msg.attach(MIMEText(plain_text, "plain"))
         msg.attach(MIMEText(html_text, "html"))
 
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=12)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(SMTP_USERNAME, clean_pwd)
-        server.send_message(msg)
-        server.quit()
+        # Primary attempt: Port 587 (STARTTLS)
+        try:
+            server = smtplib.SMTP(host, port, timeout=12)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(username, password)
+            server.send_message(msg)
+            server.quit()
+        except (smtplib.SMTPServerDisconnected, TimeoutError, OSError):
+            # Automatic fallback: Port 465 (Direct SSL)
+            server = smtplib.SMTP_SSL(host, 465, timeout=12)
+            server.login(username, password)
+            server.send_message(msg)
+            server.quit()
+
         return True, f"A 6-digit verification code has been sent to {to_email}. Please check your inbox."
     except smtplib.SMTPAuthenticationError as e:
         print(f"[SMTP AUTH ERROR] Gmail login rejected: {e}")
         return False, "Gmail authentication failed. You must use a 16-character Google App Password (not your Gmail login password)."
     except smtplib.SMTPServerDisconnected as e:
         print(f"[SMTP DISCONNECTED] Connection closed by server: {e}")
-        return False, "Google closed the connection. This happens when using your normal password instead of a 16-character Google App Password."
+        return False, "Google closed the connection. Please verify your 16-character App Password."
     except Exception as e:
         print(f"[SMTP ERROR] {type(e).__name__}: {e}")
         return False, f"Failed to send email to {to_email}: {e}"
@@ -228,16 +250,17 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
 
 def notify_portfolio_owner(message_record: dict):
     """Notifies Kartik Bhor's inbox of the new verified contact message."""
-    clean_pwd = SMTP_PASSWORD.strip().replace(" ", "")
+    host, port, username, password, mail_from, inbox = get_smtp_credentials()
+
     if not is_smtp_configured():
-        print(f"[NOTIFICATION LOG] Verified contact received from {message_record.get('email')} -> {CONTACT_INBOX}")
+        print(f"[NOTIFICATION LOG] Verified contact received from {message_record.get('email')} -> {inbox}")
         return
 
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"🚀 New Verified Message: {message_record.get('subject')} (from {message_record.get('name')})"
-        msg["From"] = MAIL_FROM
-        msg["To"] = CONTACT_INBOX
+        msg["From"] = mail_from
+        msg["To"] = inbox
 
         body = f"""
         New verified message submitted on Kartik Bhor Portfolio:
@@ -253,11 +276,21 @@ def notify_portfolio_owner(message_record: dict):
         ------------------------------------------------------------
         """
         msg.attach(MIMEText(body, "plain"))
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=12)
-        server.starttls()
-        server.login(SMTP_USERNAME, clean_pwd)
-        server.send_message(msg)
-        server.quit()
+
+        try:
+            server = smtplib.SMTP(host, port, timeout=12)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(username, password)
+            server.send_message(msg)
+            server.quit()
+        except (smtplib.SMTPServerDisconnected, TimeoutError, OSError):
+            server = smtplib.SMTP_SSL(host, 465, timeout=12)
+            server.login(username, password)
+            server.send_message(msg)
+            server.quit()
+
     except Exception as e:
         print(f"[NOTIFICATION ERROR] Failed to notify owner inbox: {e}")
 
