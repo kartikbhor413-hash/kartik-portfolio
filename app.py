@@ -150,17 +150,11 @@ def is_smtp_configured() -> bool:
 
 
 def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str]:
-    """Sends OTP verification email via SMTP or falls back to server log."""
+    """Sends OTP verification email via SMTP directly to the visitor's real email address."""
     clean_pwd = SMTP_PASSWORD.strip().replace(" ", "")
 
     if not is_smtp_configured():
-        print("\n" + "=" * 70)
-        print(" [LOCAL DEVELOPMENT / SETUP MODE] SMTP Credentials Not Configured in .env")
-        print(f" -> Recipient   : {recipient_name} <{to_email}>")
-        print(f" -> 6-Digit OTP : >>> {otp_code} <<< (Valid for 5 minutes)")
-        print(" (Set your 16-character Google App Password in .env to send real emails)")
-        print("=" * 70 + "\n")
-        return True, "Dev Mode: Verification code generated! Check your terminal console for the 6-digit code."
+        return False, "Email service is not fully configured in .env. A 16-character Google App Password is required."
 
     try:
         msg = MIMEMultipart("alternative")
@@ -214,29 +208,22 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
         msg.attach(MIMEText(html_text, "html"))
 
         server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=12)
+        server.ehlo()
         server.starttls()
+        server.ehlo()
         server.login(SMTP_USERNAME, clean_pwd)
         server.send_message(msg)
         server.quit()
-        return True, f"A 6-digit verification code has been sent to {to_email}."
+        return True, f"A 6-digit verification code has been sent to {to_email}. Please check your inbox."
     except smtplib.SMTPAuthenticationError as e:
-        print("\n" + "=" * 70)
-        print(f" [SMTP AUTHENTICATION ERROR] Gmail login rejected for {SMTP_USERNAME}")
-        print(" -> Google requires a 16-character App Password (not your Gmail login password).")
-        print(" -> Generate one at: https://myaccount.google.com/apppasswords")
-        print(f" -> [DEV MODE FALLBACK OTP] >>> {otp_code} <<<")
-        print("=" * 70 + "\n")
-        if app.debug or os.getenv("FLASK_ENV") == "development":
-            return True, "Gmail rejected login (16-char App Password needed in .env). Check terminal for testing code!"
-        return False, "Email service authentication failed. Please check your Gmail App Password."
+        print(f"[SMTP AUTH ERROR] Gmail login rejected: {e}")
+        return False, "Gmail authentication failed. You must use a 16-character Google App Password (not your Gmail login password)."
+    except smtplib.SMTPServerDisconnected as e:
+        print(f"[SMTP DISCONNECTED] Connection closed by server: {e}")
+        return False, "Google closed the connection. This happens when using your normal password instead of a 16-character Google App Password."
     except Exception as e:
-        print("\n" + "=" * 70)
-        print(f" [SMTP ERROR] Failed to send email via SMTP: {e}")
-        print(f" -> [DEV MODE FALLBACK OTP] >>> {otp_code} <<<")
-        print("=" * 70 + "\n")
-        if app.debug or os.getenv("FLASK_ENV") == "development":
-            return True, "Could not reach SMTP server. Code printed in terminal for testing!"
-        return False, "Failed to send verification code. Please try again shortly."
+        print(f"[SMTP ERROR] {type(e).__name__}: {e}")
+        return False, f"Failed to send email to {to_email}: {e}"
 
 
 def notify_portfolio_owner(message_record: dict):
