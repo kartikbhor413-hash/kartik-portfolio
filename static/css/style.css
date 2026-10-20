@@ -1462,6 +1462,30 @@ h1, h2, h3, h4, h5, h6 {
   margin-bottom: 24px;
 }
 
+.otp-hint-banner {
+  background: rgba(181, 101, 255, 0.16);
+  border: 1px solid var(--acc);
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  color: #ffffff;
+  margin-bottom: 20px;
+  text-align: center;
+  box-shadow: 0 4px 16px var(--acc-glow);
+}
+
+.highlight-code {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 800;
+  color: var(--acc-light);
+  letter-spacing: 3px;
+  font-size: 17px;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin: 0 4px;
+}
+
 .otp-inputs-group {
   display: flex;
   justify-content: center;

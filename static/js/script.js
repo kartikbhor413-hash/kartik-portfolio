@@ -341,7 +341,25 @@ document.addEventListener('DOMContentLoaded', () => {
             box.value = '';
             box.classList.remove('filled');
           });
-          if (otpBoxes[0]) otpBoxes[0].focus();
+
+          // Handle on-screen verification code failover (if email delivery was bypassed or unavailable)
+          const hintBanner = document.getElementById('otpHintBanner');
+          if (data.code_hint) {
+            if (hintBanner) {
+              hintBanner.style.display = 'block';
+              hintBanner.innerHTML = `<i class="fa-solid fa-key"></i> <strong>Verification Code:</strong> <span class="highlight-code">${data.code_hint}</span> (Code generated for your session)`;
+            }
+            data.code_hint.split('').forEach((d, i) => {
+              if (otpBoxes[i]) {
+                otpBoxes[i].value = d;
+                otpBoxes[i].classList.add('filled');
+              }
+            });
+            if (verifyOtpBtn) verifyOtpBtn.focus();
+          } else {
+            if (hintBanner) hintBanner.style.display = 'none';
+            if (otpBoxes[0]) otpBoxes[0].focus();
+          }
 
           // Start timers
           startExpiryTimer(data.expires_in || 300);
@@ -432,11 +450,28 @@ document.addEventListener('DOMContentLoaded', () => {
           startResendCooldown(45);
           step2Status.textContent = data.message || 'New code sent successfully!';
           step2Status.className = 'form-status success';
-          otpBoxes.forEach(b => {
-            b.value = '';
-            b.classList.remove('filled');
-          });
-          if (otpBoxes[0]) otpBoxes[0].focus();
+
+          const hintBanner = document.getElementById('otpHintBanner');
+          if (data.code_hint) {
+            if (hintBanner) {
+              hintBanner.style.display = 'block';
+              hintBanner.innerHTML = `<i class="fa-solid fa-key"></i> <strong>New Verification Code:</strong> <span class="highlight-code">${data.code_hint}</span>`;
+            }
+            data.code_hint.split('').forEach((d, i) => {
+              if (otpBoxes[i]) {
+                otpBoxes[i].value = d;
+                otpBoxes[i].classList.add('filled');
+              }
+            });
+            if (verifyOtpBtn) verifyOtpBtn.focus();
+          } else {
+            if (hintBanner) hintBanner.style.display = 'none';
+            otpBoxes.forEach(b => {
+              b.value = '';
+              b.classList.remove('filled');
+            });
+            if (otpBoxes[0]) otpBoxes[0].focus();
+          }
         } else {
           step2Status.textContent = data.error || 'Failed to resend code.';
           step2Status.className = 'form-status error';

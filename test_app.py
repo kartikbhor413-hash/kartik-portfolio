@@ -22,7 +22,7 @@ def run_tests():
             print(f" [FAIL] {name} - {details}")
 
     # Mock send_otp_email for local unit testing so it does not fail when running offline
-    with patch("app.send_otp_email", return_value=(True, "A 6-digit code has been sent")):
+    with patch("app.send_otp_email", return_value=(True, "A 6-digit code has been sent", None)):
         # Test 1: Home Page GET
         res = client.get("/")
         assert_test(
