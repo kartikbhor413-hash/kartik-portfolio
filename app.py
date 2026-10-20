@@ -30,7 +30,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
 MAIL_FROM = os.getenv("MAIL_FROM", f"Kartik Bhor Portfolio <{SMTP_USERNAME}>" if SMTP_USERNAME else "noreply@kartikbhor.dev")
-CONTACT_INBOX = os.getenv("CONTACT_INBOX", SMTP_USERNAME or "kartikbhor413@gmail.com").strip()
+CONTACT_INBOX = os.getenv("CONTACT_INBOX", SMTP_USERNAME or "kartikbhor619@gmail.com").strip()
 
 # Salt used for internal OTP HMAC/hashing
 INTERNAL_SALT = app.config["SECRET_KEY"]
@@ -145,7 +145,7 @@ def get_smtp_credentials():
     raw_pwd = os.getenv("SMTP_PASSWORD", "")
     password = raw_pwd.strip().replace(" ", "")
     mail_from = os.getenv("MAIL_FROM", f"Kartik Bhor Portfolio <{username}>" if username else "noreply@kartikbhor.dev")
-    inbox = os.getenv("CONTACT_INBOX", username or "kartikbhor413@gmail.com").strip()
+    inbox = os.getenv("CONTACT_INBOX", username or "kartikbhor619@gmail.com").strip()
     return host, port, username, password, mail_from, inbox
 
 
