@@ -2,18 +2,20 @@
 -- KARTIK BHOR PORTFOLIO - SUPABASE DATABASE SCHEMA
 -- Project: https://supabase.com/dashboard/project/uhreznoytbvlommykqpe
 -- ==============================================================================
--- Instructions:
+-- INSTRUCTIONS:
 -- 1. Open your Supabase Dashboard: https://supabase.com/dashboard/project/uhreznoytbvlommykqpe
--- 2. Go to the "SQL Editor" tab from the left sidebar.
--- 3. Click "New query", paste this entire script, and click "Run".
+-- 2. Go to "SQL Editor" in the left sidebar.
+-- 3. Click "New query" (or clear your existing editor window).
+-- 4. Paste this entire script below.
+-- 5. IMPORTANT: Make sure NO text is highlighted/selected with your mouse!
+-- 6. Click the green "Run" button (or press Ctrl + Enter).
 -- ==============================================================================
 
--- Enable UUID extension if not already enabled
+-- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ------------------------------------------------------------------------------
--- 1. Table: contact_messages
--- Stores verified messages sent by visitors after successful email OTP verification.
+-- 1. Create Table: contact_messages
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.contact_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -25,35 +27,44 @@ CREATE TABLE IF NOT EXISTS public.contact_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Index for searching messages by email or date
+-- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_contact_messages_email ON public.contact_messages(email);
 CREATE INDEX IF NOT EXISTS idx_contact_messages_created ON public.contact_messages(created_at DESC);
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE public.contact_messages ENABLE ROW LEVEL SECURITY;
 
--- Security Policy:
--- Service role (backend) has full read/write access.
--- Public / anonymous users CANNOT read contact messages.
-DROP POLICY IF EXISTS "Service role full access on contact_messages" ON public.contact_messages;
-CREATE POLICY "Service role full access on contact_messages" 
-    ON public.contact_messages
-    FOR ALL
-    TO service_role
-    USING (true)
-    WITH CHECK (true);
+-- Safe Policy Creation (Checks if policy exists first to prevent any 42P01 error)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'contact_messages' 
+        AND policyname = 'Service role full access on contact_messages'
+    ) THEN
+        CREATE POLICY "Service role full access on contact_messages" 
+        ON public.contact_messages
+        FOR ALL
+        TO service_role
+        USING (true)
+        WITH CHECK (true);
+    END IF;
 
--- Optional: Allow backend using anon key with restricted INSERT only if service role is not used
-DROP POLICY IF EXISTS "Allow anon insert for verified messages" ON public.contact_messages;
-CREATE POLICY "Allow anon insert for verified messages"
-    ON public.contact_messages
-    FOR INSERT
-    TO anon
-    WITH CHECK (true);
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'contact_messages' 
+        AND policyname = 'Allow anon insert for verified messages'
+    ) THEN
+        CREATE POLICY "Allow anon insert for verified messages"
+        ON public.contact_messages
+        FOR INSERT
+        TO anon
+        WITH CHECK (true);
+    END IF;
+END $$;
 
 -- ------------------------------------------------------------------------------
--- 2. Table: email_otps
--- Manages short-lived, cryptographically hashed OTPs and verification sessions.
+-- 2. Create Table: email_otps
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.email_otps (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -67,7 +78,7 @@ CREATE TABLE IF NOT EXISTS public.email_otps (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Indexes for lightning-fast OTP lookups & expiration pruning
+-- Indexes for lightning-fast OTP lookups
 CREATE INDEX IF NOT EXISTS idx_email_otps_session ON public.email_otps(session_token);
 CREATE INDEX IF NOT EXISTS idx_email_otps_email ON public.email_otps(email);
 CREATE INDEX IF NOT EXISTS idx_email_otps_expires ON public.email_otps(expires_at);
@@ -75,19 +86,25 @@ CREATE INDEX IF NOT EXISTS idx_email_otps_expires ON public.email_otps(expires_a
 -- Enable Row Level Security (RLS)
 ALTER TABLE public.email_otps ENABLE ROW LEVEL SECURITY;
 
--- Security Policy:
--- OTP table must NEVER be readable by anonymous web visitors!
-DROP POLICY IF EXISTS "Service role full access on email_otps" ON public.email_otps;
-CREATE POLICY "Service role full access on email_otps"
-    ON public.email_otps
-    FOR ALL
-    TO service_role
-    USING (true)
-    WITH CHECK (true);
+-- Safe Policy Creation for email_otps
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'email_otps' 
+        AND policyname = 'Service role full access on email_otps'
+    ) THEN
+        CREATE POLICY "Service role full access on email_otps"
+        ON public.email_otps
+        FOR ALL
+        TO service_role
+        USING (true)
+        WITH CHECK (true);
+    END IF;
+END $$;
 
 -- ------------------------------------------------------------------------------
--- 3. Maintenance Helper: Cleanup Expired OTPs
--- Can be called periodically or via Supabase Scheduled Edge Function/pg_cron.
+-- 3. Maintenance Function: Cleanup Expired OTPs
 -- ------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.cleanup_expired_otps()
 RETURNS INT AS $$
