@@ -150,7 +150,9 @@ def get_smtp_credentials():
 
 
 def is_smtp_configured() -> bool:
-    """Returns True if real email credentials (Brevo HTTPS or SMTP) have been provided."""
+    """Returns True if real email credentials (EmailJS, Brevo, or SMTP) have been provided."""
+    if os.getenv("EMAILJS_SERVICE_ID") and os.getenv("EMAILJS_TEMPLATE_ID") and os.getenv("EMAILJS_PUBLIC_KEY"):
+        return True
     brevo_key = os.getenv("BREVO_API_KEY", "").strip()
     if brevo_key and not brevo_key.startswith("your_"):
         return True
@@ -163,6 +165,44 @@ def is_smtp_configured() -> bool:
         or "@" not in username
     )
     return bool(host and port and username and not is_placeholder)
+
+
+def send_via_emailjs(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str]:
+    """Sends OTP email via EmailJS HTTPS REST API (Port 443 - zero cloud firewall blocks)."""
+    service_id = os.getenv("EMAILJS_SERVICE_ID", "").strip()
+    template_id = os.getenv("EMAILJS_TEMPLATE_ID", "").strip()
+    public_key = os.getenv("EMAILJS_PUBLIC_KEY", "").strip()
+    private_key = os.getenv("EMAILJS_PRIVATE_KEY", "").strip()
+
+    if not (service_id and template_id and public_key):
+        return False, "EmailJS credentials not fully configured."
+
+    url = "https://api.emailjs.com/api/v1.0/email/send"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "service_id": service_id,
+        "template_id": template_id,
+        "user_id": public_key,
+        "template_params": {
+            "to_email": to_email,
+            "recipient_name": recipient_name or "Visitor",
+            "otp_code": otp_code,
+            "subject": f"{otp_code} is your Kartik Bhor Portfolio Verification Code",
+            "message": f"Hello {recipient_name},\n\nYour 6-digit verification code is: {otp_code}\n\nThis code will expire in 5 minutes."
+        }
+    }
+    if private_key:
+        payload["accessToken"] = private_key
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=12)
+        if res.status_code == 200 or res.text == "OK":
+            return True, f"A 6-digit verification code has been sent to {to_email}. Please check your inbox."
+        print(f"[EMAILJS ERROR] Status {res.status_code}: {res.text}")
+        return False, f"EmailJS delivery error ({res.status_code}): {res.text}"
+    except Exception as e:
+        print(f"[EMAILJS EXCEPTION] {e}")
+        return False, f"EmailJS request failed: {e}"
 
 
 def send_via_brevo(to_email: str, recipient_name: str, subject: str, html_content: str, text_content: str) -> tuple[bool, str]:
@@ -246,7 +286,14 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
     </html>
     """
 
-    # Check for Brevo HTTPS API first (bypasses cloud SMTP port blocks)
+    # 1. Primary for Cloud / Render: EmailJS (HTTPS Port 443 - zero firewall blocks)
+    if os.getenv("EMAILJS_SERVICE_ID") and os.getenv("EMAILJS_TEMPLATE_ID") and os.getenv("EMAILJS_PUBLIC_KEY"):
+        sent, msg = send_via_emailjs(to_email, recipient_name, otp_code)
+        if sent:
+            return True, msg
+        print(f"[EMAILJS WARNING] Delivery failed ({msg}), attempting fallback...")
+
+    # 2. Check for Brevo HTTPS API
     brevo_key = os.getenv("BREVO_API_KEY", "").strip()
     if brevo_key and not brevo_key.startswith("your_"):
         sent, msg = send_via_brevo(
