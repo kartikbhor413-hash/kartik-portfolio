@@ -150,7 +150,10 @@ def get_smtp_credentials():
 
 
 def is_smtp_configured() -> bool:
-    """Returns True if real SMTP credentials have been provided in .env."""
+    """Returns True if real email credentials (Brevo HTTPS or SMTP) have been provided."""
+    brevo_key = os.getenv("BREVO_API_KEY", "").strip()
+    if brevo_key and not brevo_key.startswith("your_"):
+        return True
     host, port, username, password, _, _ = get_smtp_credentials()
     is_placeholder = (
         not password
@@ -162,60 +165,106 @@ def is_smtp_configured() -> bool:
     return bool(host and port and username and not is_placeholder)
 
 
+def send_via_brevo(to_email: str, recipient_name: str, subject: str, html_content: str, text_content: str) -> tuple[bool, str]:
+    """Sends email via Brevo transactional HTTP API (Port 443 - never blocked by cloud firewalls)."""
+    api_key = os.getenv("BREVO_API_KEY", "").strip()
+    if not api_key:
+        return False, "BREVO_API_KEY not configured."
+    
+    sender_email = os.getenv("BREVO_SENDER_EMAIL", os.getenv("SMTP_USERNAME", "kartikbhor619@gmail.com")).strip()
+    sender_name = os.getenv("BREVO_SENDER_NAME", "Kartik Bhor Portfolio").strip()
+    
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key,
+        "content-type": "application/json"
+    }
+    payload = {
+        "sender": {"name": sender_name, "email": sender_email},
+        "to": [{"email": to_email, "name": recipient_name or "Visitor"}],
+        "subject": subject,
+        "htmlContent": html_content,
+        "textContent": text_content
+    }
+    try:
+        res = requests.post("https://api.brevo.com/v3/smtp/email", headers=headers, json=payload, timeout=12)
+        if res.status_code in (200, 201):
+            return True, f"A 6-digit verification code has been sent to {to_email}. Please check your inbox."
+        print(f"[BREVO ERROR] Status {res.status_code}: {res.text}")
+        return False, f"Brevo delivery error ({res.status_code}): {res.text}"
+    except Exception as e:
+        print(f"[BREVO EXCEPTION] {e}")
+        return False, f"Brevo request failed: {e}"
+
+
 def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str]:
-    """Sends OTP verification email via SMTP directly to the visitor's real email address."""
+    """Sends OTP verification email via Brevo HTTPS API or SMTP directly to the visitor's real email address."""
     host, port, username, password, mail_from, _ = get_smtp_credentials()
 
     if not is_smtp_configured():
-        return False, "Email service is not configured. Please set SMTP_PASSWORD in your environment variables."
+        return False, "Email service is not configured. Please set BREVO_API_KEY or SMTP_PASSWORD in your environment variables."
+
+    plain_text = (
+        f"Hello {recipient_name},\n\n"
+        f"Your verification code for Kartik Bhor's developer portfolio is: {otp_code}\n\n"
+        f"This code will expire in 5 minutes.\n"
+        f"If you did not request this, please ignore this email.\n\n"
+        f"Best regards,\nKartik Bhor"
+    )
+
+    html_text = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="margin:0;padding:24px;background-color:#121214;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e1e1e6;">
+      <div style="max-width:520px;margin:0 auto;background:#1a1a1e;border:1px solid #2e2e36;border-radius:12px;padding:32px;box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+        <div style="text-align:center;margin-bottom:24px;">
+          <span style="display:inline-block;padding:6px 14px;background:rgba(181,101,255,0.15);border:1px solid #b565ff;border-radius:20px;color:#b565ff;font-weight:700;font-size:12px;letter-spacing:1px;">
+            SECURITY VERIFICATION
+          </span>
+          <h2 style="color:#ffffff;margin:16px 0 6px 0;font-size:22px;">Confirm Your Contact Request</h2>
+          <p style="color:#a4a4ad;font-size:14px;margin:0;">Hi {recipient_name}, enter this 6-digit code to verify your email and deliver your message.</p>
+        </div>
+        
+        <div style="background:#141416;border:1px dashed #b565ff;border-radius:10px;padding:20px;text-align:center;margin:24px 0;">
+          <span style="font-size:36px;font-weight:800;letter-spacing:8px;color:#b565ff;font-family:monospace;">
+            {otp_code}
+          </span>
+        </div>
+
+        <p style="color:#8f8f9d;font-size:13px;line-height:1.5;margin:16px 0 0 0;text-align:center;">
+          ⏰ This code is valid for <strong>5 minutes</strong> and can only be used once.<br>
+          If you did not initiate this request, you can safely ignore this email.
+        </p>
+
+        <hr style="border:none;border-top:1px solid #2a2a32;margin:28px 0 20px 0;">
+        <div style="text-align:center;color:#6b6b76;font-size:12px;">
+          Kartik Bhor — Full Stack Developer & AI Engineer<br>
+          <a href="https://github.com/kartikbhor413-hash" style="color:#9b6fd6;text-decoration:none;">github.com/kartikbhor413-hash</a>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+    # Check for Brevo HTTPS API first (bypasses cloud SMTP port blocks)
+    brevo_key = os.getenv("BREVO_API_KEY", "").strip()
+    if brevo_key and not brevo_key.startswith("your_"):
+        sent, msg = send_via_brevo(
+            to_email=to_email,
+            recipient_name=recipient_name,
+            subject=f"{otp_code} is your Kartik Bhor Portfolio Verification Code",
+            html_content=html_text,
+            text_content=plain_text
+        )
+        if sent:
+            return True, f"A 6-digit verification code has been sent to {to_email}. Please check your inbox."
+        print(f"[BREVO WARNING] Delivery failed ({msg}), falling back to SMTP...")
 
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"{otp_code} is your Kartik Bhor Portfolio Verification Code"
         msg["From"] = mail_from
         msg["To"] = to_email
-
-        plain_text = (
-            f"Hello {recipient_name},\n\n"
-            f"Your verification code for Kartik Bhor's developer portfolio is: {otp_code}\n\n"
-            f"This code will expire in 5 minutes.\n"
-            f"If you did not request this, please ignore this email.\n\n"
-            f"Best regards,\nKartik Bhor"
-        )
-
-        html_text = f"""
-        <!DOCTYPE html>
-        <html>
-        <body style="margin:0;padding:24px;background-color:#121214;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e1e1e6;">
-          <div style="max-width:520px;margin:0 auto;background:#1a1a1e;border:1px solid #2e2e36;border-radius:12px;padding:32px;box-shadow:0 10px 30px rgba(0,0,0,0.5);">
-            <div style="text-align:center;margin-bottom:24px;">
-              <span style="display:inline-block;padding:6px 14px;background:rgba(181,101,255,0.15);border:1px solid #b565ff;border-radius:20px;color:#b565ff;font-weight:700;font-size:12px;letter-spacing:1px;">
-                SECURITY VERIFICATION
-              </span>
-              <h2 style="color:#ffffff;margin:16px 0 6px 0;font-size:22px;">Confirm Your Contact Request</h2>
-              <p style="color:#a4a4ad;font-size:14px;margin:0;">Hi {recipient_name}, enter this 6-digit code to verify your email and deliver your message.</p>
-            </div>
-            
-            <div style="background:#141416;border:1px dashed #b565ff;border-radius:10px;padding:20px;text-align:center;margin:24px 0;">
-              <span style="font-size:36px;font-weight:800;letter-spacing:8px;color:#b565ff;font-family:monospace;">
-                {otp_code}
-              </span>
-            </div>
-
-            <p style="color:#8f8f9d;font-size:13px;line-height:1.5;margin:16px 0 0 0;text-align:center;">
-              ⏰ This code is valid for <strong>5 minutes</strong> and can only be used once.<br>
-              If you did not initiate this request, you can safely ignore this email.
-            </p>
-
-            <hr style="border:none;border-top:1px solid #2a2a32;margin:28px 0 20px 0;">
-            <div style="text-align:center;color:#6b6b76;font-size:12px;">
-              Kartik Bhor — Full Stack Developer & AI Engineer<br>
-              <a href="https://github.com/kartikbhor413-hash" style="color:#9b6fd6;text-decoration:none;">github.com/kartikbhor413-hash</a>
-            </div>
-          </div>
-        </body>
-        </html>
-        """
 
         msg.attach(MIMEText(plain_text, "plain"))
         msg.attach(MIMEText(html_text, "html"))
@@ -240,6 +289,12 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
     except smtplib.SMTPAuthenticationError as e:
         print(f"[SMTP AUTH ERROR] Gmail login rejected: {e}")
         return False, "Gmail authentication failed. Please verify your 16-character App Password."
+    except OSError as e:
+        print(f"[SMTP NETWORK ERROR] {e}")
+        return False, (
+            "Network unreachable on SMTP port. (Render Free Tier blocks ports 587/465. "
+            "Please set BREVO_API_KEY in Render to send via free HTTPS API)."
+        )
     except Exception as e:
         print(f"[SMTP ERROR] {type(e).__name__}: {e}")
         return False, f"Failed to send email to {to_email}: {e}"
@@ -253,25 +308,40 @@ def notify_portfolio_owner(message_record: dict):
         print(f"[NOTIFICATION LOG] Verified contact received from {message_record.get('email')} -> {inbox}")
         return
 
+    body = f"""
+    New verified message submitted on Kartik Bhor Portfolio:
+    
+    Name: {message_record.get('name')}
+    Email: {message_record.get('email')}
+    Subject: {message_record.get('subject')}
+    Timestamp: {datetime.now(timezone.utc).isoformat()}
+    
+    Message:
+    ------------------------------------------------------------
+    {message_record.get('message')}
+    ------------------------------------------------------------
+    """
+
+    # Check for Brevo HTTPS API first
+    brevo_key = os.getenv("BREVO_API_KEY", "").strip()
+    if brevo_key and not brevo_key.startswith("your_"):
+        subject = f"🚀 New Verified Message: {message_record.get('subject')} (from {message_record.get('name')})"
+        sent, _ = send_via_brevo(
+            to_email=inbox,
+            recipient_name="Kartik Bhor",
+            subject=subject,
+            html_content=f"<pre style='font-family:sans-serif;'>{body}</pre>",
+            text_content=body
+        )
+        if sent:
+            print(f"[BREVO NOTIFICATION] Verified message delivered to owner inbox: {inbox}")
+            return
+
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"🚀 New Verified Message: {message_record.get('subject')} (from {message_record.get('name')})"
         msg["From"] = mail_from
         msg["To"] = inbox
-
-        body = f"""
-        New verified message submitted on Kartik Bhor Portfolio:
-        
-        Name: {message_record.get('name')}
-        Email: {message_record.get('email')}
-        Subject: {message_record.get('subject')}
-        Timestamp: {datetime.now(timezone.utc).isoformat()}
-        
-        Message:
-        ------------------------------------------------------------
-        {message_record.get('message')}
-        ------------------------------------------------------------
-        """
         msg.attach(MIMEText(body, "plain"))
 
         try:
@@ -287,7 +357,6 @@ def notify_portfolio_owner(message_record: dict):
             server.login(username, password)
             server.send_message(msg)
             server.quit()
-
     except Exception as e:
         print(f"[NOTIFICATION ERROR] Failed to notify owner inbox: {e}")
 
